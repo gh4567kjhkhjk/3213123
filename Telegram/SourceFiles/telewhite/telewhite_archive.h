@@ -9,14 +9,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 class HistoryItem;
 class PeerData;
 
-namespace Ui::Menu {
-struct MenuCallback;
-} // namespace Ui::Menu
-
-namespace Window {
-class SessionController;
-} // namespace Window
-
 namespace Telewhite {
 
 struct EditVersion {
@@ -32,9 +24,17 @@ struct DeletedMessage {
 	QString fromName;
 	TextWithEntities text;
 	QString media;
+	bool photo = false;
+	bool noForwards = false;
 };
 
-void RememberDeleted(not_null<HistoryItem*> item);
+// Keeps a deleted message in the chat with a mark and archives it,
+// returns false if it was already marked.
+bool MarkDeleted(not_null<HistoryItem*> item);
+[[nodiscard]] bool IsMarkedDeleted(not_null<const HistoryItem*> item);
+[[nodiscard]] std::optional<DeletedMessage> FindDeleted(
+	not_null<HistoryItem*> item);
+
 [[nodiscard]] bool HasDeleted(not_null<PeerData*> peer);
 [[nodiscard]] std::vector<DeletedMessage> Deleted(not_null<PeerData*> peer);
 void ClearDeleted(not_null<PeerData*> peer);
@@ -42,10 +42,5 @@ void ClearDeleted(not_null<PeerData*> peer);
 void RememberEditVersion(not_null<HistoryItem*> item, EditVersion version);
 [[nodiscard]] std::vector<EditVersion> EditVersions(
 	not_null<HistoryItem*> item);
-
-void AddDeletedMessagesAction(
-	not_null<Window::SessionController*> controller,
-	not_null<PeerData*> peer,
-	const Ui::Menu::MenuCallback &addAction);
 
 } // namespace Telewhite
