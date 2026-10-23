@@ -8,36 +8,27 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "base/timer.h"
 #include "base/unixtime.h"
-#include "base/weak_ptr.h"
 #include "data/data_media_types.h"
 #include "data/data_peer.h"
 #include "data/data_peer_id.h"
+#include "data/data_photo.h"
 #include "history/history.h"
 #include "history/history_item.h"
-#include "lang/lang_keys.h"
 #include "main/main_session.h"
 #include "storage/storage_account.h"
-#include "telewhite/telewhite_mods.h"
-#include "ui/boxes/confirm_box.h"
-#include "ui/layers/generic_box.h"
-#include "ui/vertical_list.h"
-#include "ui/widgets/labels.h"
-#include "ui/widgets/menu/menu_add_action_callback.h"
-#include "ui/wrap/vertical_layout.h"
-#include "window/window_session_controller.h"
-#include "styles/style_layers.h"
-#include "styles/style_menu_icons.h"
+#include "telewhite/telewhite_deleted_media.h"
 
 #include <QtCore/QDataStream>
 
 namespace Telewhite {
 namespace {
 
-constexpr auto kArchiveVersion = quint32(1);
+constexpr auto kArchiveVersion = quint32(2);
+constexpr auto kDeletedPhotoFlag = quint32(0x01);
+constexpr auto kDeletedNoForwardsFlag = quint32(0x02);
 constexpr auto kMaxDeleted = 5000;
 constexpr auto kMaxEdited = 3000;
 constexpr auto kMaxVersions = 50;
-constexpr auto kMaxShownDeleted = 300;
 constexpr auto kSaveDelay = crl::time(3000);
 
 void WriteText(QDataStream &stream, const TextWithEntities &text) {
@@ -59,6 +50,9 @@ void WriteText(QDataStream &stream, const TextWithEntities &text) {
 class Archive final {
 public:
 	explicit Archive(not_null<Main::Session*> session);
+
+	[[nodiscard]] bool mark(FullMsgId id);
+	[[nodiscard]] bool marked(FullMsgId id) const;
 
 	void rememberDeleted(PeerId peerId, DeletedMessage message);
 	[[nodiscard]] bool hasDeleted(PeerId peerId);
@@ -84,6 +78,7 @@ private:
 
 	const not_null<Main::Session*> _session;
 	base::Timer _saveTimer;
+	base::flat_set<FullMsgId> _marked;
 	std::deque<DeletedEntry> _deleted;
 	base::flat_map<FullMsgId, std::vector<EditVersion>> _edits;
 	bool _loaded = false;
@@ -132,11 +127,27 @@ void Archive::flush() {
 	save(true);
 }
 
+bool Archive::mark(FullMsgId id) {
+	return _marked.emplace(id).second;
+}
+
+bool Archive::marked(FullMsgId id) const {
+	return _marked.contains(id);
+}
+
 void Archive::rememberDeleted(PeerId peerId, DeletedMessage message) {
 	load();
 	_deleted.push_back({ .peerId = peerId, .message = std::move(message) });
+	auto evicted = std::vector<FullMsgId>();
 	while (int(_deleted.size()) > kMaxDeleted) {
+		const auto &front = _deleted.front();
+		if (front.message.photo) {
+			evicted.emplace_back(front.peerId, front.message.msgId);
+		}
 		_deleted.pop_front();
+	}
+	if (!evicted.empty()) {
+		ForgetDeletedPhotos(_session, evicted);
 	}
 	changed();
 }
@@ -159,6 +170,15 @@ std::vector<DeletedMessage> Archive::deleted(PeerId peerId) {
 
 void Archive::clearDeleted(PeerId peerId) {
 	load();
+	auto photos = std::vector<FullMsgId>();
+	for (const auto &entry : _deleted) {
+		if (entry.peerId == peerId && entry.message.photo) {
+			photos.emplace_back(peerId, entry.message.msgId);
+		}
+	}
+	if (!photos.empty()) {
+		ForgetDeletedPhotos(_session, photos);
+	}
 	const auto was = _deleted.size();
 	_deleted.erase(
 		ranges::remove(_deleted, peerId, &DeletedEntry::peerId),
@@ -214,7 +234,10 @@ QByteArray Archive::serialize() const {
 			<< SerializePeerId(message.fromId)
 			<< message.fromName;
 		WriteText(stream, message.text);
-		stream << message.media;
+		stream
+			<< message.media
+			<< quint32((message.photo ? kDeletedPhotoFlag : 0)
+				| (message.noForwards ? kDeletedNoForwardsFlag : 0));
 	}
 	stream << quint32(_edits.size());
 	for (const auto &[id, versions] : _edits) {
@@ -238,7 +261,8 @@ bool Archive::deserialize(const QByteArray &serialized) {
 	auto deletedCount = quint32();
 	stream >> version >> userId >> deletedCount;
 	if (stream.status() != QDataStream::Ok
-		|| version != kArchiveVersion
+		|| !version
+		|| version > kArchiveVersion
 		|| userId != _session->userId().bare
 		|| deletedCount > quint32(kMaxDeleted)) {
 		return false;
@@ -259,6 +283,10 @@ bool Archive::deserialize(const QByteArray &serialized) {
 			>> entry.message.fromName;
 		entry.message.text = ReadText(stream);
 		stream >> entry.message.media;
+		auto flags = quint32();
+		if (version > 1) {
+			stream >> flags;
+		}
 		if (stream.status() != QDataStream::Ok) {
 			return false;
 		}
@@ -267,6 +295,8 @@ bool Archive::deserialize(const QByteArray &serialized) {
 		entry.message.date = TimeId(date);
 		entry.message.deletedAt = TimeId(deletedAt);
 		entry.message.fromId = DeserializePeerId(fromId);
+		entry.message.photo = (flags & kDeletedPhotoFlag);
+		entry.message.noForwards = (flags & kDeletedNoForwardsFlag);
 		_deleted.push_back(std::move(entry));
 	}
 	auto editsCount = quint32();
@@ -340,73 +370,21 @@ using Archives = base::flat_map<
 	return ArchiveFor(&item->history()->session());
 }
 
-void DeletedMessagesBox(
-		not_null<Ui::GenericBox*> box,
-		not_null<PeerData*> peer) {
-	box->setTitle(tr::lng_telewhite_deleted_title());
-	box->setWidth(st::boxWideWidth);
-
-	const auto container = box->verticalLayout();
-	const auto list = Deleted(peer);
-	const auto count = int(list.size());
-	const auto from = std::max(count - kMaxShownDeleted, 0);
-	for (auto i = count; i != from;) {
-		const auto &message = list[--i];
-		Ui::AddSubsectionTitle(
-			container,
-			tr::lng_telewhite_deleted_entry(
-				lt_name,
-				rpl::single(message.fromName),
-				lt_date,
-				rpl::single(FormatExactDateTime(message.date))));
-		auto text = TextWithEntities();
-		if (!message.media.isEmpty()) {
-			text.append(u"["_q + message.media + u"]"_q);
-			if (!message.text.text.isEmpty()) {
-				text.append(u"\n"_q);
-			}
-		}
-		text.append(message.text);
-		if (text.text.isEmpty()) {
-			text.append(tr::lng_telewhite_edit_history_empty(tr::now));
-		}
-		const auto label = container->add(
-			object_ptr<Ui::FlatLabel>(
-				container,
-				rpl::single(std::move(text)),
-				st::boxLabel),
-			st::boxRowPadding);
-		label->setSelectable(true);
-		Ui::AddSkip(container);
-	}
-
-	const auto weak = base::make_weak(box);
-	box->addButton(tr::lng_close(), [=] { box->closeBox(); });
-	box->addLeftButton(tr::lng_telewhite_deleted_clear(), [=] {
-		box->uiShow()->show(Ui::MakeConfirmBox({
-			.text = tr::lng_telewhite_deleted_clear_sure(),
-			.confirmed = [=](Fn<void()> close) {
-				ClearDeleted(peer);
-				close();
-				if (const auto strong = weak.get()) {
-					strong->closeBox();
-				}
-			},
-			.confirmText = tr::lng_box_delete(),
-			.confirmStyle = &st::attentionBoxButton,
-		}));
-	});
-}
-
 } // namespace
 
-void RememberDeleted(not_null<HistoryItem*> item) {
-	if (!item->isRegular() || item->isService()) {
-		return;
+bool MarkDeleted(not_null<HistoryItem*> item) {
+	if (!item->isRegular()
+		|| item->isService()
+		|| !ArchiveFor(item)->mark(item->fullId())) {
+		return false;
 	}
 	const auto media = item->media();
+	const auto photo = media ? media->photo() : nullptr;
 	const auto from = item->from();
-	ArchiveFor(item)->rememberDeleted(item->history()->peer->id, {
+	const auto peer = item->history()->peer;
+	const auto noForwards = item->forbidsSaving() || !peer->allowsForwarding();
+	const auto withPhoto = photo && !photo->isNull();
+	ArchiveFor(item)->rememberDeleted(peer->id, {
 		.msgId = item->id,
 		.date = item->date(),
 		.deletedAt = base::unixtime::now(),
@@ -414,7 +392,23 @@ void RememberDeleted(not_null<HistoryItem*> item) {
 		.fromName = from->name(),
 		.text = item->originalText(),
 		.media = media ? media->pinnedTextSubstring() : QString(),
+		.photo = withPhoto,
+		.noForwards = noForwards,
 	});
+	if (withPhoto && !noForwards) {
+		RememberDeletedPhoto(item);
+	}
+	return true;
+}
+
+bool IsMarkedDeleted(not_null<const HistoryItem*> item) {
+	return ArchiveFor(&item->history()->session())->marked(item->fullId());
+}
+
+std::optional<DeletedMessage> FindDeleted(not_null<HistoryItem*> item) {
+	const auto list = Deleted(item->history()->peer);
+	const auto i = ranges::find(list, item->id, &DeletedMessage::msgId);
+	return (i != end(list)) ? std::make_optional(*i) : std::nullopt;
 }
 
 bool HasDeleted(not_null<PeerData*> peer) {
@@ -435,18 +429,6 @@ void RememberEditVersion(not_null<HistoryItem*> item, EditVersion version) {
 
 std::vector<EditVersion> EditVersions(not_null<HistoryItem*> item) {
 	return ArchiveFor(item)->editVersions(item->fullId());
-}
-
-void AddDeletedMessagesAction(
-		not_null<Window::SessionController*> controller,
-		not_null<PeerData*> peer,
-		const Ui::Menu::MenuCallback &addAction) {
-	if (!HasDeleted(peer)) {
-		return;
-	}
-	addAction(tr::lng_telewhite_deleted_title(tr::now), [=] {
-		controller->show(Box(DeletedMessagesBox, peer));
-	}, &st::menuIconDelete);
 }
 
 } // namespace Telewhite
