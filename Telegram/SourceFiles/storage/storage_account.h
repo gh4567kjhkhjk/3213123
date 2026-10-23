@@ -171,6 +171,7 @@ public:
 		const QByteArray &serialized,
 		bool sync);
 	[[nodiscard]] QByteArray readTelewhiteData(TelewhiteData type);
+	[[nodiscard]] QString telewhiteMediaPath() const;
 
 	void setMediaLastPlaybackPosition(DocumentId id, crl::time time);
 	[[nodiscard]] crl::time mediaLastPlaybackPosition(DocumentId id) const;
