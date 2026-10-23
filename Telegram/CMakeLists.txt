@@ -2003,6 +2003,8 @@ PRIVATE
     telewhite/telewhite_peer_info.h
     telewhite/telewhite_snowfall.cpp
     telewhite/telewhite_snowfall.h
+    telewhite/telewhite_streamer_mode.cpp
+    telewhite/telewhite_streamer_mode.h
     storage/details/storage_file_utilities.cpp
     storage/details/storage_file_utilities.h
     storage/details/storage_settings_scheme.cpp
