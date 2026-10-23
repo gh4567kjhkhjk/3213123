@@ -6,6 +6,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "telewhite/telewhite_mods_box.h"
 
+#include "base/platform/base_platform_info.h"
 #include "core/application.h"
 #include "core/core_settings.h"
 #include "settings.h"
@@ -159,6 +160,19 @@ void ModsBox(not_null<Ui::GenericBox*> box) {
 		Mod::GhostStories);
 	Ui::AddSkip(container);
 	Ui::AddDividerText(container, tr::lng_telewhite_mods_ghost_about());
+
+	// Display affinity, which hides windows from capture, is Windows-only.
+	if (Platform::IsWindows()) {
+		AddSection(container, tr::lng_telewhite_mods_streamer());
+		AddModToggle(
+			container,
+			tr::lng_telewhite_mods_streamer_hide(),
+			Mod::StreamerMode);
+		Ui::AddSkip(container);
+		Ui::AddDividerText(
+			container,
+			tr::lng_telewhite_mods_streamer_about());
+	}
 
 	AddSection(container, tr::lng_telewhite_mods_messages());
 	AddModToggle(
