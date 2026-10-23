@@ -6,6 +6,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "telewhite/telewhite_mods_box.h"
 
+#include "base/platform/base_platform_info.h"
 #include "core/application.h"
 #include "core/core_settings.h"
 #include "settings.h"

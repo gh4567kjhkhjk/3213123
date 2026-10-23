@@ -29,6 +29,7 @@ enum class Mod {
 	PreciseLastSeen,
 	RegistrationDate,
 	Snowfall,
+	StreamerMode,
 
 	kCount,
 };
