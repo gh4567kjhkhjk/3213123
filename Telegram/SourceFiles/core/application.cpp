@@ -103,6 +103,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/accessible/ui_accessible_factory.h"
 #include "ui/boxes/confirm_box.h"
 #include "core/cached_webview_availability.h"
+#include "telewhite/telewhite_streamer_mode.h"
 #include "test/test_agent.h"
 
 #include <QtCore/QStandardPaths>
@@ -351,6 +352,7 @@ void Application::run() {
 	startShortcuts();
 	startEmojiImageLoader();
 	startSystemDarkModeViewer();
+	Telewhite::SetupStreamerMode(_lifetime);
 	Media::Player::start(_audio.get());
 	Media::Encode::ClearStaleTempFiles();
 	Storage::ClearStaleArchiveFiles();

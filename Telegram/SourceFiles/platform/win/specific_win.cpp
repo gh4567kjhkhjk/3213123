@@ -27,6 +27,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "storage/localstorage.h"
 #include "core/application.h"
 #include "window/window_controller.h"
+#include "telewhite/telewhite_streamer_mode.h"
 #include "core/crash_reports.h"
 #include "core/version.h"
 
@@ -535,12 +536,13 @@ bool AmbientScreenshotProtectionSupported() {
 }
 
 void SetWindowScreenshotProtection(not_null<QWidget*> window, bool enabled) {
+	const auto protect = Telewhite::StreamerModeProtection(window, enabled);
 	const auto handle = window->internalWinId();
 	if (!handle) {
 		return;
 	}
 	const auto hwnd = reinterpret_cast<HWND>(handle);
-	if (!enabled) {
+	if (!protect) {
 		SetWindowDisplayAffinity(hwnd, WDA_NONE);
 	} else if (!SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)) {
 		SetWindowDisplayAffinity(hwnd, WDA_MONITOR);
