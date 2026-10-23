@@ -1945,6 +1945,12 @@ QString Account::cacheBigFilePath() const {
 	return _databasePath + "media_cache";
 }
 
+QString Account::telewhiteMediaPath() const {
+	Expects(!_databasePath.isEmpty());
+
+	return _databasePath + u"telewhite_media"_q;
+}
+
 Cache::Database::Settings Account::cacheBigFileSettings() const {
 	auto result = Cache::Database::Settings();
 	result.clearOnWrongKey = true;

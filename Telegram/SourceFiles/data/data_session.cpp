@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "ui/text/text_utilities.h"
 #include "telewhite/telewhite_archive.h"
+#include "telewhite/telewhite_deleted_media.h"
 #include "telewhite/telewhite_edit_history.h"
 #include "telewhite/telewhite_mods.h"
 #include "main/main_session.h"
@@ -320,21 +321,10 @@ void EnumerateStaticMediaPhotos(
 void TelewhiteMarkDeleted(
 		not_null<Session*> owner,
 		not_null<HistoryItem*> item) {
-	static auto marked = base::flat_set<std::pair<uint64, FullMsgId>>();
-	const auto key = std::pair(owner->session().uniqueId(), item->fullId());
-	if (!marked.emplace(key).second) {
-		return;
+	if (Telewhite::MarkDeleted(item)) {
+		// The mark is shown next to the time, see BottomInfo.
+		owner->notifyItemDataChange(item);
 	}
-	Telewhite::RememberDeleted(item);
-	auto text = item->originalText();
-	if (!text.text.isEmpty()) {
-		text.append(u"\n\n"_q);
-	}
-	text.append(Ui::Text::Italic(
-		tr::lng_telewhite_mods_deleted_mark(tr::now)));
-	item->setText(std::move(text));
-	owner->requestItemTextRefresh(item);
-	owner->requestItemResize(item);
 }
 
 } // namespace
@@ -6152,6 +6142,7 @@ void Session::clearLocalStorage() {
 	_cache->clear();
 	_bigFileCache->close();
 	_bigFileCache->clear();
+	Telewhite::ClearDeletedPhotos(_session);
 }
 
 void Session::fillMessagePeer(FullMsgId fullId, PeerId peerId) {
