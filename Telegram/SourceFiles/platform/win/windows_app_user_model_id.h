@@ -18,6 +18,11 @@ void CheckPinned();
 [[nodiscard]] const std::wstring &Id();
 bool ValidateShortcut();
 
+// Registers Id() as a notification source the way the Windows App SDK
+// registers unpackaged apps: Windows drops toasts of an unknown Id().
+void ValidateNotificationsSource(const QString &iconPath);
+void CleanupNotificationsSource();
+
 [[nodiscard]] const PROPERTYKEY &Key();
 
 [[nodiscard]] const std::wstring &MyExecutablePath();

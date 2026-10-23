@@ -727,11 +727,19 @@ QString FormatDialogsDate(const QDateTime &lastTime) {
 namespace {
 
 bool ShowSecondsInTime = false;
+int TimeFormatVersion = 0;
 
 } // namespace
 
 void SetShowSecondsInTime(bool show) {
-	ShowSecondsInTime = show;
+	if (ShowSecondsInTime != show) {
+		ShowSecondsInTime = show;
+		++TimeFormatVersion;
+	}
+}
+
+int TimeOfDayFormatVersion() {
+	return TimeFormatVersion;
 }
 
 QString FormatTimeOfDay(const QTime &time) {

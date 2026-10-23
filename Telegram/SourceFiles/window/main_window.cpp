@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "window/main_window.h"
 
+#include "telewhite/telewhite_snowfall.h"
 #include "api/api_updates.h"
 #include "storage/localstorage.h"
 #include "platform/platform_specific.h"
@@ -44,6 +45,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/painter.h"
 #include "ui/screen_reader_mode.h"
 #include "ui/ui_utility.h"
+#include "ui/unread_counter_format.h"
 #include "apiwrap.h"
 #include "mainwidget.h" // session->content()->windowShown().
 #include "tray.h"
@@ -272,10 +274,7 @@ QIcon CreateIcon(Main::Session *session, bool returnNullIfDefault) {
 }
 
 QImage GenerateCounterLayer(CounterLayerArgs &&args) {
-	const auto count = args.count.value();
-	const auto text = (count < 1000)
-		? QString::number(count)
-		: u"..%1"_q.arg(count % 100, 2, 10, QChar('0'));
+	const auto text = FormatUnreadCounterShort(args.count.value());
 	const auto textSize = text.size();
 
 	struct Dimensions {
@@ -325,19 +324,29 @@ QImage GenerateCounterLayer(CounterLayerArgs &&args) {
 
 	auto p = QPainter(&result);
 	auto hq = PainterHighQualityEnabler(p);
-	const auto f = style::font{ d.font, 0, 0 };
+	auto font = d.font;
+	auto f = style::font{ font, 0, 0 };
+	const auto height = f->height;
+	const auto skip = std::max(d.delta - 1, 1);
+	while (font > 1 && f->width(text) + d.delta + skip > d.size) {
+		f = style::font{ --font, 0, 0 };
+	}
 	const auto w = f->width(text);
+	const auto left = std::max(d.size - w - d.delta * 2, 0);
+	const auto radius = std::min(
+		d.radius * f->height / float64(height),
+		f->height / 2.);
 
 	p.setBrush(args.bg.value());
 	p.setPen(Qt::NoPen);
 	p.drawRoundedRect(
 		QRect(
-			d.size - w - d.delta * 2,
+			left,
 			d.size - f->height,
-			w + d.delta * 2,
+			d.size - left,
 			f->height),
-		d.radius,
-		d.radius);
+		radius,
+		radius);
 
 	p.setFont(f);
 	p.setPen(args.fg.value());
@@ -576,6 +585,8 @@ void MainWindow::init() {
 
 	updateTitle();
 	updateWindowIcon();
+
+	Telewhite::SetupSnowfall(bodyWidget());
 }
 
 void MainWindow::handleStateChanged(Qt::WindowState state) {
@@ -845,16 +856,8 @@ void MainWindow::imeCompositionStartReceived() {
 	_imeCompositionStartReceived.fire({});
 }
 
-rpl::producer<> MainWindow::leaveEvents() const {
-	return _leaveEvents.events();
-}
-
 rpl::producer<> MainWindow::imeCompositionStarts() const {
 	return _imeCompositionStartReceived.events();
-}
-
-void MainWindow::leaveEventHook(QEvent *e) {
-	_leaveEvents.fire({});
 }
 
 void MainWindow::updateControlsGeometry() {
@@ -914,9 +917,9 @@ void MainWindow::updateTitle() {
 		: Dialogs::Key();
 	const auto thread = key ? key.thread() : nullptr;
 	if (!thread) {
-			setTitle((user.isEmpty() ? u"Telewhite"_q : user) + added + suffix);
-			return;
-		}
+		setTitle((user.isEmpty() ? u"Telewhite"_q : user) + added + suffix);
+		return;
+	}
 	const auto history = thread->owningHistory();
 	const auto topic = thread->asTopic();
 	const auto name = topic

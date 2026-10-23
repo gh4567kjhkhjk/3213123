@@ -22,6 +22,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_session.h"
 #include "menu/menu_mark_as_read.h"
 #include "menu/menu_mute.h"
+#include "telewhite/telewhite_local_pins.h"
 #include "ui/toast/toast.h"
 #include "window/window_peer_menu.h"
 #include "window/window_session_controller.h"
@@ -114,7 +115,7 @@ void PerformQuickDialogAction(
 		});
 	} else if (action == Dialogs::Ui::QuickDialogAction::Pin) {
 		const auto entry = (Dialogs::Entry*)(history);
-		const auto isPinned = entry->isPinnedDialog(filterId);
+		const auto isPinned = Telewhite::IsPinnedInList(entry, filterId);
 		const auto onToggled = isPinned
 			? Fn<void()>(nullptr)
 			: [=] {
@@ -206,7 +207,7 @@ Ui::QuickDialogActionLabel ResolveQuickDialogLabel(
 			: Ui::QuickDialogActionLabel::Mute;
 	} else if (action == Dialogs::Ui::QuickDialogAction::Pin) {
 		const auto entry = (Dialogs::Entry*)(history);
-		return entry->isPinnedDialog(filterId)
+		return Telewhite::IsPinnedInList(entry, filterId)
 			? Ui::QuickDialogActionLabel::Unpin
 			: Ui::QuickDialogActionLabel::Pin;
 	} else if (action == Dialogs::Ui::QuickDialogAction::Read) {

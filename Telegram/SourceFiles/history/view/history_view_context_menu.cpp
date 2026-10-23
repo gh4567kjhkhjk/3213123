@@ -113,6 +113,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "media/player/media_player_instance.h"
 #include "spellcheck/spellcheck_types.h"
 #include "apiwrap.h"
+#include "telewhite/telewhite_edit_history.h"
 #include "styles/style_chat.h"
 #include "styles/style_chat_helpers.h"
 #include "styles/style_layers.h"
@@ -855,7 +856,7 @@ bool AddReplyToMessageAction(
 	const auto &quote = request.quote;
 	auto text = (todoListTaskId
 		? tr::lng_context_reply_to_task
-		: quote.highlight.quote.empty()
+		: !quote
 		? tr::lng_context_reply_msg
 		: tr::lng_context_quote_and_reply)(
 			tr::now,
@@ -866,6 +867,7 @@ bool AddReplyToMessageAction(
 			.quote = quote.highlight.quote,
 			.quoteOffset = quote.highlight.quoteOffset,
 			.todoItemId = todoListTaskId,
+			.richQuote = quote.highlight.richQuote,
 		}, base::IsCtrlPressed());
 	}, &st::menuIconReply);
 	return true;
@@ -1922,6 +1924,9 @@ void FillContextMenuItems(
 		}
 	}
 
+	if (item && !item->isService()) {
+		Telewhite::AddEditHistoryAction(result, list->controller(), item);
+	}
 	AddCopyLinkAction(result, link);
 	AddMessageActions(result, request, list);
 

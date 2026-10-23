@@ -1709,6 +1709,11 @@ void Widget::setupStories() {
 		_scroll->viewportEvent(e);
 	}, _stories->lifetime());
 
+	Core::App().settings().hideStoriesChanges(
+	) | rpl::on_next([=](bool) {
+		updateStoriesVisibility();
+	}, _stories->lifetime());
+
 	if (!Core::App().settings().storiesClickTooltipHidden()) {
 		// Don't create tooltip
 		// until storiesClickTooltipHidden can be returned to false.
@@ -2214,6 +2219,10 @@ void Widget::updateSuggestions(anim::type animated) {
 
 		_suggestions->closeRequests() | rpl::on_next([=] {
 			closeSuggestions();
+		}, _suggestions->lifetime());
+
+		_suggestions->persistReleased() | rpl::on_next([=] {
+			processSearchFocusChange();
 		}, _suggestions->lifetime());
 
 		updateControlsGeometry();
@@ -2845,14 +2854,6 @@ void Widget::updateStoriesVisibility() {
 	if (!_stories) {
 		return;
 	}
-	if (Core::App().settings().hideStories()) {
-		_stories->setToggledHidden(true, false);
-		if (_scroll->position().overscroll < -st::dialogsFilterSkip) {
-			_scroll->clearOverscroll();
-		}
-		_stories->update();
-		return;
-	}
 	const auto widthAnimation = !_widthAnimationCache.isNull();
 	const auto suggestionsAnimation = widthAnimation
 		&& !_openedFolder
@@ -2873,6 +2874,7 @@ void Widget::updateStoriesVisibility() {
 		|| (widthAnimation && !suggestionsAnimation)
 		|| _childList
 		|| _stories->empty()
+		|| Core::App().settings().hideStories()
 		|| (pulledDown && hiddenAnimated);
 	const auto hidden = hiddenInstant || hiddenAnimated;
 	const auto changed = (_stories->toggledHidden() != hidden);
@@ -4861,6 +4863,7 @@ bool Widget::redirectKeyToSearch(QKeyEvent *e) const {
 	}
 	const auto character = !(e->modifiers() & ~Qt::ShiftModifier)
 		&& (e->key() != Qt::Key_Shift)
+		&& (e->text() != u"?"_q)
 		&& RedirectTextToSearch(e->text());
 	if (character) {
 		return true;

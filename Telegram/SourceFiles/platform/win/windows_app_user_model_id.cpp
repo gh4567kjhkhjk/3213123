@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "platform/win/windows_toast_activator.h"
 #include "base/platform/win/base_windows_winrt.h"
 #include "core/launcher.h"
+#include "core/version.h"
 
 #include <propvarutil.h>
 #include <propkey.h>
@@ -40,6 +41,26 @@ const WCHAR AppUserModelIdBase[] = L"Telewhite.Desktop";
 	}
 	return QString();
 }
+
+#ifndef OS_WIN_STORE
+[[nodiscard]] std::wstring NotificationsSourceKey() {
+	return L"Software\\Classes\\AppUserModelId\\" + Id();
+}
+
+bool SetRegistryString(
+		HKEY key,
+		LPCWSTR name,
+		const std::wstring &value) {
+	const auto status = RegSetValueEx(
+		key,
+		name,
+		0,
+		REG_SZ,
+		reinterpret_cast<const BYTE*>(value.c_str()),
+		DWORD((value.size() + 1) * sizeof(WCHAR)));
+	return (status == ERROR_SUCCESS);
+}
+#endif // !OS_WIN_STORE
 
 } // namespace
 
@@ -468,6 +489,54 @@ bool ValidateShortcut() {
 
 	LOG(("App Info: Shortcut created and validated at \"%1\"").arg(path));
 	return true;
+}
+
+void ValidateNotificationsSource([[maybe_unused]] const QString &iconPath) {
+#ifndef OS_WIN_STORE
+	auto key = HKEY();
+	const auto status = RegCreateKeyEx(
+		HKEY_CURRENT_USER,
+		NotificationsSourceKey().c_str(),
+		0,
+		nullptr,
+		REG_OPTION_NON_VOLATILE,
+		KEY_SET_VALUE,
+		nullptr,
+		&key,
+		nullptr);
+	if (status != ERROR_SUCCESS) {
+		LOG(("App Error: Could not create notifications source key: %1"
+			).arg(status));
+		return;
+	}
+	const auto guard = gsl::finally([&] {
+		RegCloseKey(key);
+	});
+
+	WCHAR activator[64] = { 0 };
+	const auto length = StringFromGUID2(
+		__uuidof(ToastActivator),
+		activator,
+		int(std::size(activator)));
+	const auto name = AppName.utf16().toStdWString();
+	const auto icon = QDir::toNativeSeparators(iconPath).toStdWString();
+	const auto registered = SetRegistryString(key, L"DisplayName", name)
+		&& (iconPath.isEmpty() || SetRegistryString(key, L"IconUri", icon))
+		&& (length > 0)
+		&& SetRegistryString(key, L"CustomActivator", activator);
+	if (registered) {
+		LOG(("App Info: Notifications source registered for \"%1\""
+			).arg(QString::fromStdWString(Id())));
+	} else {
+		LOG(("App Error: Could not register notifications source."));
+	}
+#endif // !OS_WIN_STORE
+}
+
+void CleanupNotificationsSource() {
+#ifndef OS_WIN_STORE
+	RegDeleteKey(HKEY_CURRENT_USER, NotificationsSourceKey().c_str());
+#endif // !OS_WIN_STORE
 }
 
 const std::wstring &Id() {

@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "data/data_peer_values.h"
 
+#include "telewhite/telewhite_mods.h"
 #include "lang/lang_keys.h"
 #include "data/data_channel.h"
 #include "data/data_chat.h"
@@ -491,12 +492,38 @@ crl::time OnlineChangeTimeout(not_null<UserData*> user, TimeId now) {
 	return OnlineChangeTimeout(user->lastseen(), now);
 }
 
+namespace {
+
+[[nodiscard]] QString PreciseOnlineText(TimeId till, TimeId now) {
+	const auto onlineFull = base::unixtime::parse(till);
+	const auto nowFull = base::unixtime::parse(now);
+	const auto locale = QLocale();
+	const auto time = locale.toString(onlineFull.time(), u"HH:mm:ss"_q);
+	if (onlineFull.date() == nowFull.date()) {
+		return tr::lng_status_lastseen_today(tr::now, lt_time, time);
+	} else if (onlineFull.date().addDays(1) == nowFull.date()) {
+		return tr::lng_status_lastseen_yesterday(tr::now, lt_time, time);
+	}
+	const auto date = locale.toString(onlineFull.date(), QLocale::ShortFormat);
+	return tr::lng_status_lastseen_date_time(
+		tr::now,
+		lt_date,
+		date,
+		lt_time,
+		time);
+}
+
+} // namespace
+
 QString OnlineText(Data::LastseenStatus status, TimeId now) {
 	if (const auto common = OnlineTextCommon(status, now)) {
 		return *common;
 	}
 	const auto till = status.onlineTill();
 	Assert(till > 0);
+	if (Telewhite::Enabled(Telewhite::Mod::PreciseLastSeen)) {
+		return PreciseOnlineText(till, now);
+	}
 	const auto minutes = (now - till) / 60;
 	if (!minutes) {
 		return tr::lng_status_lastseen_now(tr::now);
@@ -535,6 +562,9 @@ QString OnlineTextFull(not_null<UserData*> user, TimeId now) {
 		return *common;
 	}
 	const auto till = user->lastseen().onlineTill();
+	if (Telewhite::Enabled(Telewhite::Mod::PreciseLastSeen)) {
+		return PreciseOnlineText(till, now);
+	}
 	const auto onlineFull = base::unixtime::parse(till);
 	const auto nowFull = base::unixtime::parse(now);
 	const auto locale = QLocale();

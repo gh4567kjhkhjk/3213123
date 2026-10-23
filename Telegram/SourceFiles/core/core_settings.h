@@ -530,10 +530,14 @@ public:
 	}
 	void setHideStories(bool value) {
 		writePref<bool>(kHideStoriesKey, value);
+		_hideStoriesChanges.fire_copy(value);
 		_saveDelayed.fire({});
 	}
 	[[nodiscard]] bool hideStories() {
 		return readPref<bool>(kHideStoriesKey, false);
+	}
+	[[nodiscard]] rpl::producer<bool> hideStoriesChanges() const {
+		return _hideStoriesChanges.events();
 	}
 	void setPullToNextChannel(bool value) {
 		_pullToNextChannel = value;
@@ -1226,6 +1230,7 @@ private:
 	rpl::event_stream<bool> _tabbedReplacedWithInfoValue; // per-window
 
 	rpl::event_stream<> _saveDelayed;
+	rpl::event_stream<bool> _hideStoriesChanges;
 	float64 _rememberedSongVolume = kDefaultVolume;
 	bool _rememberedSoundNotifyFromTray = false;
 	bool _rememberedFlashBounceNotifyFromTray = false;

@@ -36,6 +36,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_session.h"
 #include "storage/localstorage.h"
 #include "support/support_helper.h"
+#include "telewhite/telewhite_local_pins.h"
 #include "ui/empty_userpic.h"
 #include "ui/painter.h"
 #include "ui/rect.h"
@@ -71,6 +72,14 @@ const auto kPsaBadgePrefix = "cloud_lng_badge_psa_";
 		&& !user->isSupport()
 		&& !user->isRepliesChat()
 		&& !user->isVerifyCodes();
+}
+
+[[nodiscard]] bool DisplayPinned(
+		not_null<const Entry*> entry,
+		FilterId filter) {
+	return (entry->isPinnedDialog(filter)
+			&& (filter || !entry->fixedOnTopIndex()))
+		|| (!filter && Telewhite::IsLocallyPinned(entry));
 }
 
 [[nodiscard]] bool ShowSendActionInDialogs(Data::Thread *thread) {
@@ -624,8 +633,7 @@ void PaintRow(
 		// Unlike the Archive folder (fixed on top), a collapsed community is
 		// a movable pinned entry, so it shows the pinned icon when pinned and
 		// without an unread counter, exactly like an ordinary chat.
-		const auto displayPinnedIcon = entry->isPinnedDialog(context.filter)
-			&& (context.filter || !entry->fixedOnTopIndex());
+		const auto displayPinnedIcon = DisplayPinned(entry, context.filter);
 		const auto availableWidth = PaintWideCounter(
 			p,
 			context,
@@ -672,8 +680,7 @@ void PaintRow(
 		auto availableWidth = namewidth;
 		if (const auto used = PaintRightButton(p, context)) {
 			availableWidth -= used;
-		} else if (entry->isPinnedDialog(context.filter)
-			&& (context.filter || !entry->fixedOnTopIndex())) {
+		} else if (DisplayPinned(entry, context.filter)) {
 			auto &icon = ThreeStateIcon(
 				st::dialogsPinnedIcon,
 				context.active,
@@ -770,8 +777,7 @@ void PaintRow(
 		auto availableWidth = namewidth;
 		if (const auto used = PaintRightButton(p, context)) {
 			availableWidth -= used;
-		} else if (entry->isPinnedDialog(context.filter)
-			&& (context.filter || !entry->fixedOnTopIndex())) {
+		} else if (DisplayPinned(entry, context.filter)) {
 			auto &icon = ThreeStateIcon(
 				st::dialogsPinnedIcon,
 				context.active,
@@ -810,8 +816,7 @@ void PaintRow(
 		}
 
 		paintItemCallback(nameleft, namewidth);
-	} else if (entry->isPinnedDialog(context.filter)
-		&& (context.filter || !entry->fixedOnTopIndex())) {
+	} else if (DisplayPinned(entry, context.filter)) {
 		auto &icon = ThreeStateIcon(
 			st::dialogsPinnedIcon,
 			context.active,
@@ -1164,8 +1169,7 @@ void RowPainter::Paint(
 		return std::max(itemDate, draftDate);
 	}();
 	const auto displayPinnedIcon = badgesState.empty()
-		&& entry->isPinnedDialog(context.filter)
-		&& (context.filter || !entry->fixedOnTopIndex());
+		&& DisplayPinned(entry, context.filter);
 
 	const auto from = history
 		? (history->peer->migrateTo()

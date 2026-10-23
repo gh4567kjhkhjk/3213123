@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "platform/win/notifications_manager_win.h"
 
 #include "window/notifications_utilities.h"
+#include "window/main_window.h"
 #include "window/window_session_controller.h"
 #include "base/platform/win/base_windows_co_task_mem.h"
 #include "base/platform/win/base_windows_rpcndr_h.h"
@@ -57,6 +58,8 @@ constexpr auto kQuerySettingsEachMs = 1000;
 
 crl::time LastSettingsQueryMs/* = 0*/;
 
+auto NativeFailed = false;
+
 [[nodiscard]] bool ShouldQuerySettings() {
 	const auto now = crl::now();
 	if (LastSettingsQueryMs > 0 && now <= LastSettingsQueryMs + kQuerySettingsEachMs) {
@@ -105,6 +108,28 @@ crl::time LastSettingsQueryMs/* = 0*/;
 )";
 }
 
+[[nodiscard]] QString NotificationsSourceIconPath() {
+	const auto folder = cWorkingDir() + u"tdata"_q;
+	QDir().mkpath(folder);
+	const auto path = folder + u"/notifications_icon.png"_q;
+	return Window::Logo().save(path, "PNG") ? path : QString();
+}
+
+// The toast was dropped or rejected by the system, so the remaining
+// notifications of this launch are shown by our own popups instead.
+void FallbackToCustom(const QString &reason) {
+	if (NativeFailed) {
+		return;
+	}
+	NativeFailed = true;
+	LOG(("App Error: %1, switching to custom notifications.").arg(reason));
+	crl::on_main([] {
+		if (Core::IsAppLaunched()) {
+			Core::App().notifications().createManager();
+		}
+	});
+}
+
 bool init() {
 	if (!IsWindows8OrGreater() || !base::WinRT::Supported()) {
 		return false;
@@ -121,6 +146,7 @@ bool init() {
 		LOG(("App Error: Shortcut validation failed."));
 		return false;
 	}
+	AppUserModelId::ValidateNotificationsSource(NotificationsSourceIconPath());
 
 	PWSTR appUserModelId = {};
 	if (!SUCCEEDED(GetCurrentProcessExplicitAppUserModelID(&appUserModelId))) {
@@ -281,15 +307,67 @@ void QueryFocusAssist() {
 		IQuietHoursSettings
 	>(CLSID_QuietHoursSettings, CLSCTX_LOCAL_SERVER);
 	if (!quietHoursSettings) {
+		if (FocusAssistBlocks) {
+			LOG(("Focus Assist: Unavailable."));
+			FocusAssistBlocks = false;
+		}
 		return;
 	}
 
-	auto profileId = base::CoTaskMemString();
-	auto hr = quietHoursSettings->get_UserSelectedProfile(profileId.put());
-	if (FAILED(hr) || !profileId) {
+	// On Windows 11 UserSelectedProfile stays unrestricted while Focus
+	// sessions, Do Not Disturb or automatic rules are active, so check
+	// ActiveProfile and the active quiet moment profile as well and use
+	// the most restrictive of them.
+	auto active = base::CoTaskMemString();
+	auto moment = base::CoTaskMemString();
+	auto selected = base::CoTaskMemString();
+	const auto valid = [](const base::CoTaskMemString &id) {
+		return id && *id.data();
+	};
+	const auto restrictiveness = [](const QString &name) {
+		return name.endsWith(".alarmsonly", Qt::CaseInsensitive)
+			? 2
+			: name.endsWith(".priorityonly", Qt::CaseInsensitive)
+			? 1
+			: 0;
+	};
+	auto profileId = LPWSTR();
+	auto profileName = QString();
+	const auto consider = [&](const base::CoTaskMemString &id) {
+		if (!valid(id)) {
+			return;
+		}
+		const auto name = QString::fromWCharArray(id.data());
+		if (!profileId
+			|| restrictiveness(name) > restrictiveness(profileName)) {
+			profileId = id.data();
+			profileName = name;
+		}
+	};
+	if (SUCCEEDED(quietHoursSettings->get_ActiveProfile(active.put()))) {
+		consider(active);
+	}
+	com_ptr<IQuietMomentsManager> moments;
+	auto momentId = UINT32();
+	if (SUCCEEDED(quietHoursSettings->get_QuietMomentsManager(moments.put()))
+		&& moments
+		&& SUCCEEDED(moments->GetActiveQuietMoment(&momentId))
+		&& momentId != 0
+		&& SUCCEEDED(quietHoursSettings->get_ActiveQuietMomentProfile(
+			moment.put()))) {
+		consider(moment);
+	}
+	if (SUCCEEDED(quietHoursSettings->get_UserSelectedProfile(
+			selected.put()))) {
+		consider(selected);
+	}
+	if (!profileId) {
+		if (FocusAssistBlocks) {
+			LOG(("Focus Assist: No profile."));
+			FocusAssistBlocks = false;
+		}
 		return;
 	}
-	const auto profileName = QString::fromWCharArray(profileId.data());
 	if (profileName.endsWith(".alarmsonly", Qt::CaseInsensitive)) {
 		if (!FocusAssistBlocks) {
 			LOG(("Focus Assist: Alarms Only."));
@@ -320,7 +398,7 @@ void QueryFocusAssist() {
 	});
 
 	com_ptr<IQuietHoursProfile> profile;
-	hr = quietHoursSettings->GetProfile(profileId.data(), profile.put());
+	auto hr = quietHoursSettings->GetProfile(profileId, profile.put());
 	if (FAILED(hr) || !profile) {
 		return;
 	}
@@ -405,7 +483,7 @@ bool Supported() {
 		Checked = true;
 		Check();
 	}
-	return InitSucceeded;
+	return InitSucceeded && !NativeFailed;
 }
 
 bool Enforced() {
@@ -480,10 +558,23 @@ Manager::Private::Private(Manager *instance)
 }
 
 bool Manager::Private::init() {
-	return base::WinRT::Try([&] {
+	const auto created = base::WinRT::Try([&] {
 		_notifier = ToastNotificationManager::CreateToastNotifier(
 			AppUserModelId::Id());
 	});
+	if (!created) {
+		return false;
+	}
+	const auto setting = base::WinRT::Try([&] {
+		return _notifier.Setting();
+	});
+	if (setting && *setting != NotificationSetting::Enabled) {
+		LOG(("App Error: Toasts are disabled by the system, setting: %1."
+			).arg(int(*setting)));
+		_notifier = nullptr;
+		return false;
+	}
+	return true;
 }
 
 Manager::Private::~Private() {
@@ -864,8 +955,18 @@ bool Manager::Private::showNotificationInTryCatch(
 	const auto token3 = toast.Failed([=](
 			const ToastNotification &sender,
 			const ToastFailedEventArgs &args) {
+		const auto code = base::WinRT::Try([&] {
+			return int32_t(args.ErrorCode());
+		}).value_or(0);
 		performOnMainQueue([notificationId](Manager *manager) {
 			manager->clearNotification(notificationId);
+		});
+		crl::on_main([=] {
+			FallbackToCustom(u"Toast failed with error 0x%1"_q.arg(
+				uint(code),
+				8,
+				16,
+				QChar('0')));
 		});
 	});
 
@@ -889,6 +990,7 @@ bool Manager::Private::showNotificationInTryCatch(
 		if (i != _notifications.cend() && i->second.empty()) {
 			_notifications.erase(i);
 		}
+		FallbackToCustom(u"Could not show a toast"_q);
 		return false;
 	}
 	i->second.emplace(info.itemId, toast);

@@ -7,6 +7,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "data/data_session.h"
 
+#include "ui/text/text_utilities.h"
+#include "telewhite/telewhite_archive.h"
+#include "telewhite/telewhite_edit_history.h"
+#include "telewhite/telewhite_mods.h"
 #include "main/main_session.h"
 #include "main/main_session_settings.h"
 #include "main/main_app_config.h"
@@ -305,6 +309,32 @@ void EnumerateStaticMediaPhotos(
 			EnumerateStaticMediaPhotos(extended.get(), callback);
 		}
 	}
+}
+
+[[nodiscard]] bool TelewhiteKeepDeleted(not_null<HistoryItem*> item) {
+	return Telewhite::Enabled(Telewhite::Mod::SaveDeleted)
+		&& item->isRegular()
+		&& !item->isService();
+}
+
+void TelewhiteMarkDeleted(
+		not_null<Session*> owner,
+		not_null<HistoryItem*> item) {
+	static auto marked = base::flat_set<std::pair<uint64, FullMsgId>>();
+	const auto key = std::pair(owner->session().uniqueId(), item->fullId());
+	if (!marked.emplace(key).second) {
+		return;
+	}
+	Telewhite::RememberDeleted(item);
+	auto text = item->originalText();
+	if (!text.text.isEmpty()) {
+		text.append(u"\n\n"_q);
+	}
+	text.append(Ui::Text::Italic(
+		tr::lng_telewhite_mods_deleted_mark(tr::now)));
+	item->setText(std::move(text));
+	owner->requestItemTextRefresh(item);
+	owner->requestItemResize(item);
 }
 
 } // namespace
@@ -824,7 +854,7 @@ not_null<UserData*> Session::processUser(const MTPUser &data) {
 				? result->phone()
 				: qs(data.vphone().value_or_empty());
 			const auto uname = minimal
-				? result->username()
+				? result->editableUsername()
 				: TextUtilities::SingleLine(
 					qs(data.vusername().value_or_empty()));
 
@@ -1994,24 +2024,6 @@ void Session::requestDocumentViewRepaint(
 	}
 }
 
-void Session::requestPollViewRepaint(not_null<const PollData*> poll) {
-	if (const auto i = _pollViews.find(poll); i != _pollViews.end()) {
-		for (const auto &view : i->second) {
-			requestViewResize(view);
-		}
-	}
-}
-
-void Session::requestTodoListViewRepaint(
-		not_null<const TodoListData*> todolist) {
-	if (const auto i = _todoListViews.find(todolist)
-		; i != _todoListViews.end()) {
-		for (const auto &view : i->second) {
-			requestViewResize(view);
-		}
-	}
-}
-
 void Session::documentLoadProgress(not_null<DocumentData*> document) {
 	requestDocumentViewRepaint(document);
 	_documentLoadProgress.fire_copy(document);
@@ -3084,7 +3096,9 @@ void Session::updateEditedMessage(const MTPMessage &data) {
 	}, [&](const MTPDmessageService &data) {
 		existing->applyEdition(data);
 	}, [&](const auto &data) {
+		auto was = Telewhite::EditSnapshot(existing);
 		existing->applyEdition(HistoryMessageEdition(_session, data));
+		Telewhite::RememberEdit(existing, std::move(was));
 	});
 }
 
@@ -3361,6 +3375,10 @@ void Session::processMessagesDeleted(
 	for (const auto &messageId : data) {
 		const auto i = list ? list->find(messageId.v) : Messages::iterator();
 		if (list && i != list->end()) {
+			if (TelewhiteKeepDeleted(i->second)) {
+				TelewhiteMarkDeleted(this, i->second);
+				continue;
+			}
 			const auto history = i->second->history();
 			toDestroy.push_back(i->second);
 			historiesToCheck.emplace(history);
@@ -3386,6 +3404,10 @@ void Session::processNonChannelMessagesDeleted(const QVector<MTPint> &data) {
 	auto historiesToCheck = base::flat_set<not_null<History*>>();
 	for (const auto &messageId : data) {
 		if (const auto item = nonChannelMessage(messageId.v)) {
+			if (TelewhiteKeepDeleted(item)) {
+				TelewhiteMarkDeleted(this, item);
+				continue;
+			}
 			const auto history = item->history();
 			toDestroy.push_back(item);
 			historiesToCheck.emplace(history);
@@ -3678,13 +3700,6 @@ bool Session::unreadBadgeMutedIgnoreOne(Dialogs::Key key) const {
 		? key.entry()->chatListUnreadState()
 		: Dialogs::UnreadState();
 	return computeUnreadBadgeMuted(_chatsList.unreadState() - remove);
-}
-
-int Session::unreadOnlyMutedBadge() const {
-	const auto state = _chatsList.unreadState();
-	return Core::App().settings().countUnreadMessages()
-		? state.messagesMuted
-		: state.chatsMuted;
 }
 
 rpl::producer<> Session::unreadBadgeChanges() const {

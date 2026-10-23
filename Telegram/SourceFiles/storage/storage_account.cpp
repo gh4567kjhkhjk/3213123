@@ -133,6 +133,14 @@ auto EmptyMessageDraftSources()
 	return cWorkingDir() + u"tdata/"_q;
 }
 
+[[nodiscard]] QString TelewhiteDataName(TelewhiteData type) {
+	switch (type) {
+	case TelewhiteData::Archive: return u"telewhite_archive"_q;
+	case TelewhiteData::LocalPins: return u"telewhite_pins"_q;
+	}
+	Unexpected("Type in TelewhiteDataName.");
+}
+
 [[nodiscard]] QString ComputeDatabasePath(const QString &dataName) {
 	return BaseGlobalPath()
 		+ "user_" + dataName
@@ -283,6 +291,15 @@ base::flat_set<QString> Account::collectGoodNames() const {
 		"maps",
 		"configs",
 	};
+	const auto telewhite = {
+		TelewhiteData::Archive,
+		TelewhiteData::LocalPins,
+	};
+	for (const auto type : telewhite) {
+		for (const auto suffix : { '0', '1', 's' }) {
+			result.emplace(TelewhiteDataName(type) + suffix);
+		}
+	}
 	const auto push = [&](FileKey key) {
 		if (!key) {
 			return;
@@ -1617,6 +1634,7 @@ void Account::readDraftsWithCursors(not_null<History*> history) {
 	quint64 tag = 0;
 	draft.stream >> tag;
 	if (tag != kRichDraftsTag
+		&& tag != kDraftsTag2
 		&& tag != kMultiDraftTag
 		&& tag != kMultiDraftTagOld) {
 		readDraftsWithCursorsLegacy(history, draft, tag);
@@ -1802,10 +1820,6 @@ void Account::readDraftsWithCursorsLegacy(
 
 bool Account::hasDraftCursors(PeerId peer) {
 	return _draftCursorsMap.contains(peer);
-}
-
-bool Account::hasDraft(PeerId peer) {
-	return _draftsMap.contains(peer);
 }
 
 void Account::writeFileLocation(MediaKey location, const Core::FileLocation &local) {
@@ -3150,6 +3164,33 @@ Export::Settings Account::readExportSettings() {
 	return (file.stream.status() == QDataStream::Ok && result.validate())
 		? result
 		: Export::Settings();
+}
+
+void Account::writeTelewhiteData(
+		TelewhiteData type,
+		const QByteArray &serialized,
+		bool sync) {
+	if (!_localKey) {
+		return;
+	}
+	EncryptedDescriptor data(Serialize::bytearraySize(serialized));
+	data.stream << serialized;
+	FileWriteDescriptor file(TelewhiteDataName(type), _basePath, sync);
+	file.writeEncrypted(data, _localKey);
+}
+
+QByteArray Account::readTelewhiteData(TelewhiteData type) {
+	if (!_localKey) {
+		return {};
+	}
+	FileReadDescriptor file;
+	const auto name = TelewhiteDataName(type);
+	if (!ReadEncryptedFile(file, name, _basePath, _localKey)) {
+		return {};
+	}
+	auto result = QByteArray();
+	file.stream >> result;
+	return CheckStreamStatus(file.stream) ? result : QByteArray();
 }
 
 void Account::setMediaLastPlaybackPosition(DocumentId id, crl::time time) {

@@ -27,12 +27,14 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/ui_utility.h"
 #include "history/history.h"
 #include "history/history_item.h"
+#include "telewhite/telewhite_local_pins.h"
 #include "styles/style_dialogs.h" // st::dialogsTextWidthMin
 
 namespace Dialogs {
 namespace {
 
 auto DialogsPosToTopShift = 0;
+constexpr auto kTelewhiteLocalPinShift = 0x100000;
 
 uint64 DialogPosFromDate(TimeId date) {
 	if (!date) {
@@ -247,6 +249,11 @@ int Entry::lookupPinnedIndex(FilterId filterId) const {
 
 uint64 Entry::computeSortPosition(FilterId filterId) const {
 	const auto index = lookupPinnedIndex(filterId);
+	if (!index && !filterId) {
+		if (const auto local = Telewhite::LocalPinIndex(this)) {
+			return PinnedDialogPos(kTelewhiteLocalPinShift + local);
+		}
+	}
 	return index ? PinnedDialogPos(index) : _sortKeyByDate;
 }
 
@@ -350,13 +357,16 @@ DateText ResolveDateText(
 		LastNow = now;
 		LastTodaySerial = int(QDate::currentDate().toJulianDay());
 	}
+	const auto formatVersion = Ui::TimeOfDayFormatVersion();
 	if (cache.messageTimeId != date
-		|| cache.todaySerial != LastTodaySerial) {
+		|| cache.todaySerial != LastTodaySerial
+		|| cache.formatVersion != formatVersion) {
 		const auto qdt = base::unixtime::parse(date);
 		cache.text = Ui::FormatDialogsDate(qdt);
 		cache.width = st::dialogsDateFont->width(cache.text);
 		cache.messageTimeId = date;
 		cache.todaySerial = LastTodaySerial;
+		cache.formatVersion = formatVersion;
 	}
 	return { cache.text, cache.width };
 }
@@ -393,12 +403,6 @@ const RowsByLetter *Entry::chatListLinks(FilterId filterId) const {
 	return (i != end(_chatListLinks)) ? &i->second : nullptr;
 }
 
-not_null<Row*> Entry::mainChatListLink(FilterId filterId) const {
-	const auto links = chatListLinks(filterId);
-	Assert(links != nullptr);
-	return links->main;
-}
-
 Row *Entry::maybeMainChatListLink(FilterId filterId) const {
 	const auto links = chatListLinks(filterId);
 	return links ? links->main.get() : nullptr;
@@ -426,10 +430,6 @@ void Entry::setChatListTimeId(TimeId date) {
 			history->communityChatsListDateChanged(was);
 		}
 	}
-}
-
-int Entry::posInChatList(FilterId filterId) const {
-	return mainChatListLink(filterId)->index();
 }
 
 void Entry::setColorIndexForFilterId(

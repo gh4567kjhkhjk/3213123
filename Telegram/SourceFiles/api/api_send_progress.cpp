@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "api/api_send_progress.h"
 
+#include "telewhite/telewhite_mods.h"
 #include "main/main_session.h"
 #include "history/history.h"
 #include "data/data_peer.h"
@@ -152,6 +153,9 @@ void SendProgressManager::send(const Key &key, int progress) {
 }
 
 bool SendProgressManager::skipRequest(const Key &key) const {
+	if (Telewhite::Enabled(Telewhite::Mod::GhostTyping)) {
+		return true;
+	}
 	const auto user = key.history->peer->asUser();
 	if (!user) {
 		return false;

@@ -271,6 +271,7 @@ void psDoCleanup() {
 		Platform::AutostartToggle(false);
 		psSendToMenu(false, true);
 		AppUserModelId::CleanupShortcut();
+		AppUserModelId::CleanupNotificationsSource();
 		DeleteMyModules();
 	} catch (...) {
 	}

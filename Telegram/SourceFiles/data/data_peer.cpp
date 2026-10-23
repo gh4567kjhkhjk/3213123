@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "data/data_peer.h"
 
+#include "telewhite/telewhite_mods.h"
 #include "api/api_sensitive_content.h"
 #include "data/data_user.h"
 #include "data/data_chat.h"
@@ -1511,6 +1512,9 @@ void PeerData::setEmojiStatus(EmojiStatusId emojiStatusId, TimeId until) {
 }
 
 EmojiStatusId PeerData::emojiStatusId() const {
+	if (Telewhite::Enabled(Telewhite::Mod::HideEmojiStatus) && !isSelf()) {
+		return EmojiStatusId();
+	}
 	return _emojiStatusId;
 }
 

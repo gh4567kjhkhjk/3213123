@@ -53,7 +53,12 @@ jobs:
 
   windows:
     name: Windows
-    runs-on: ${{ matrix.arch == 'arm64' && 'windows-11-arm' || ((github.event_name == 'pull_request' || startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/nightly') && 'depot-windows-latest-16' || 'windows-latest') }}
+    # A pull request from a branch of this repository is already built by the
+    # push run of that branch, so only pull requests from forks build here.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
+    # Upstream builds pull requests on paid depot runners, which this fork
+    # does not have: such jobs would wait for a runner forever.
+    runs-on: ${{ matrix.arch == 'arm64' && 'windows-11-arm' || 'windows-latest' }}
 
     strategy:
       matrix:
@@ -131,6 +136,75 @@ jobs:
           nuget sources Disable -Name "Microsoft Visual Studio Offline Packages"
           nuget sources Add -Source https://api.nuget.org/v3/index.json & exit 0
 
+      # TBuild lives on C: (Windows Server 2025 runners have no separate D:)
+      # and Release libraries are built in both configurations, so drop large
+      # preinstalled toolchains the build never uses.
+      - name: Free disk space on C.
+        shell: pwsh
+        run: |
+          function Show-Free {
+            $c = Get-PSDrive C
+            'C: used {0:N1} GB, free {1:N1} GB' -f ($c.Used / 1GB), ($c.Free / 1GB)
+          }
+          Show-Free
+          $dirs = @(
+            'C:\Android',
+            'C:\Program Files (x86)\Android',
+            'C:\ghcup',
+            'C:\Miniconda',
+            'C:\selenium',
+            'C:\SeleniumWebDrivers',
+            'C:\Program Files\Docker',
+            'C:\Program Files\MongoDB',
+            'C:\Program Files\PostgreSQL',
+            'C:\Program Files\MySQL',
+            'C:\Program Files (x86)\Google',
+            'C:\Program Files\Google',
+            'C:\Program Files\Mozilla Firefox',
+            'C:\hostedtoolcache\windows\go',
+            'C:\hostedtoolcache\windows\Ruby',
+            'C:\hostedtoolcache\windows\PyPy',
+            'C:\hostedtoolcache\windows\Java_Temurin-Hotspot_jdk',
+            'C:\hostedtoolcache\windows\CodeQL',
+            'C:\hostedtoolcache\windows\node',
+            'C:\Program Files\dotnet',
+            'C:\Program Files\LLVM',
+            'C:\msys64',
+            'C:\Strawberry',
+            'C:\vcpkg',
+            'C:\Program Files\R',
+            'C:\Program Files\Amazon',
+            'C:\Program Files\Azure Cosmos DB Emulator',
+            'C:\Program Files\Microsoft SDKs\Azure',
+            'C:\Program Files (x86)\Microsoft SDKs\Azure',
+            'C:\Program Files\Microsoft SDKs\Service Fabric',
+            'C:\Program Files\Microsoft Service Fabric',
+            'C:\Program Files\Microsoft SQL Server',
+            'C:\Program Files (x86)\Microsoft SQL Server',
+            "$env:USERPROFILE\.rustup",
+            "$env:USERPROFILE\.cargo"
+          )
+          # prepare.py brings its own msys64, perl and Rust, and makes its
+          # Python venv from the default interpreter only.
+          $python = (Get-Command python -ErrorAction SilentlyContinue).Source
+          if ($python -like 'C:\hostedtoolcache\windows\Python\*') {
+            $dirs += @(Get-ChildItem 'C:\hostedtoolcache\windows\Python' -Directory |
+              Where-Object { $python -notlike "$($_.FullName)\*" } |
+              ForEach-Object FullName)
+          }
+          $dirs += @(Get-ChildItem 'C:\', 'C:\Program Files' -Directory -Filter 'Julia*' -ErrorAction SilentlyContinue |
+            ForEach-Object FullName)
+          $removals = foreach ($d in $dirs) {
+            if ($d -and (Test-Path -LiteralPath $d)) {
+              Start-Process cmd.exe -ArgumentList "/c rmdir /s /q `"$d`" 2>nul" -NoNewWindow -PassThru
+            }
+          }
+          if ($removals) {
+            $removals | Wait-Process
+          }
+          Get-ChildItem $env:TEMP -Filter *.tzst -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+          Show-Free
+
       - name: ThirdParty cache.
         id: cache-third-party
         uses: actions/cache@v6
@@ -149,8 +223,8 @@ jobs:
             !${{ env.LibrariesPath }}\[qQ]t[_-]*
             ${{ env.LibrariesPath }}\cache_keys\*
             !${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
-          key: ${{ runner.OS }}-${{ matrix.arch }}-libs-v2-${{ env.CACHE_KEY }}
-          restore-keys: ${{ runner.OS }}-${{ matrix.arch }}-libs-v2-
+          key: ${{ runner.OS }}-${{ matrix.arch }}-libs-release-${{ env.CACHE_KEY }}
+          restore-keys: ${{ runner.OS }}-${{ matrix.arch }}-libs-release-
 
       - name: Qt cache.
         id: cache-qt
@@ -159,15 +233,39 @@ jobs:
           path: |
             ${{ env.LibrariesPath }}\[qQ]t[_-]*
             ${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
-          key: ${{ runner.OS }}-${{ matrix.arch }}-${{ matrix.qt || 'qt' }}-${{ env.CACHE_KEY }}
-          restore-keys: ${{ runner.OS }}-${{ matrix.arch }}-${{ matrix.qt || 'qt' }}-
+          key: ${{ runner.OS }}-${{ matrix.arch }}-${{ matrix.qt || 'qt' }}-release-${{ env.CACHE_KEY }}
+          restore-keys: ${{ runner.OS }}-${{ matrix.arch }}-${{ matrix.qt || 'qt' }}-release-
+
+      # Release libraries build breakpad's dump_syms, which needs ATL for the
+      # pinned 14.44 toolset, while the runner image has ATL only for the latest.
+      - name: ATL for the 14.44 toolset.
+        if: matrix.arch == 'x64' && steps.cache-libs.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $installer = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer"
+          $vs = & "$installer\vswhere.exe" -latest -property installationPath
+          $arguments = "modify --installPath `"$vs`" --add Microsoft.VisualStudio.Component.VC.14.44.17.14.ATL --quiet --norestart --nocache"
+          $p = Start-Process -FilePath "$installer\setup.exe" -ArgumentList $arguments -Wait -PassThru
+          if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) { exit $p.ExitCode }
+          if (-not (Test-Path "$vs\VC\Tools\MSVC\14.44.*\atlmfc\include\atlbase.h")) {
+            Write-Error "ATL for the 14.44 toolset is missing after the install."
+            exit 1
+          }
 
       - name: Libraries.
         run: |
-          %TBUILD%\%REPO_NAME%\Telegram\build\prepare\win.bat skip-release silent ${{ matrix.qt }}
+          %TBUILD%\%REPO_NAME%\Telegram\build\prepare\win.bat silent ${{ matrix.qt }}
+
+      - name: Disk space after libraries.
+        if: success() || failure()
+        shell: pwsh
+        run: Get-PSDrive C | Select-Object Used, Free
 
       - name: Read configuration matrix.
         shell: bash
+        env:
+          API_ID: ${{ secrets.TDESKTOP_API_ID }}
+          API_HASH: ${{ secrets.TDESKTOP_API_HASH }}
         run: |
           ARTIFACT_NAME="Telegram"
 
@@ -208,7 +306,10 @@ jobs:
           echo "ARTIFACT_NAME=$ARTIFACT_NAME" >> $GITHUB_ENV
 
           API="-D TDESKTOP_API_TEST=ON"
-          if [ $GITHUB_REF == 'refs/heads/nightly' ]; then
+          if [ -n "$API_ID" ] && [ -n "$API_HASH" ]; then
+            echo "Use the repository API credentials."
+            API="-D TDESKTOP_API_ID=$API_ID -D TDESKTOP_API_HASH=$API_HASH"
+          elif [ $GITHUB_REF == 'refs/heads/nightly' ]; then
             echo "Use the open credentials."
             API="-D TDESKTOP_API_ID=611335 -D TDESKTOP_API_HASH=d524b414d21f4d37f08684c1df41ac9c"
           fi
@@ -240,7 +341,7 @@ jobs:
             !${{ env.LibrariesPath }}\[qQ]t[_-]*
             ${{ env.LibrariesPath }}\cache_keys\*
             !${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
-          key: ${{ runner.OS }}-${{ matrix.arch }}-libs-v2-${{ env.CACHE_KEY }}
+          key: ${{ runner.OS }}-${{ matrix.arch }}-libs-release-${{ env.CACHE_KEY }}
 
       - name: Save Qt cache.
         if: steps.cache-qt.outputs.cache-hit != 'true'
@@ -249,42 +350,17 @@ jobs:
           path: |
             ${{ env.LibrariesPath }}\[qQ]t[_-]*
             ${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
-          key: ${{ runner.OS }}-${{ matrix.arch }}-${{ matrix.qt || 'qt' }}-${{ env.CACHE_KEY }}
+          key: ${{ runner.OS }}-${{ matrix.arch }}-${{ matrix.qt || 'qt' }}-release-${{ env.CACHE_KEY }}
 
-      # The app build ran out of space on C: (where TBuild really lives), so
-      # drop large preinstalled toolchains this build never uses.
-      - name: Free disk space on C.
+      # Four cl.exe processes on 16 GB ran out of heap (C1060) on the large
+      # Telewhite sources, so give the compiler a pagefile on the roomy D:.
+      - name: Pagefile for the compiler.
         if: env.ONLY_CACHE == 'false'
-        shell: pwsh
-        run: |
-          Get-PSDrive C | Select-Object Used, Free
-          $dirs = @(
-            'C:\Android',
-            'C:\Program Files (x86)\Android',
-            'C:\ghcup',
-            'C:\Miniconda',
-            'C:\selenium',
-            'C:\SeleniumWebDrivers',
-            'C:\Program Files\Docker',
-            'C:\Program Files\MongoDB',
-            'C:\Program Files\PostgreSQL',
-            'C:\Program Files\MySQL',
-            'C:\Program Files (x86)\Google',
-            'C:\Program Files\Google',
-            'C:\Program Files\Mozilla Firefox',
-            'C:\hostedtoolcache\windows\go',
-            'C:\hostedtoolcache\windows\Ruby',
-            'C:\hostedtoolcache\windows\PyPy',
-            'C:\hostedtoolcache\windows\Java_Temurin-Hotspot_jdk',
-            'C:\hostedtoolcache\windows\CodeQL'
-          )
-          foreach ($d in $dirs) {
-            if (Test-Path $d) {
-              cmd /c "rmdir /s /q `"$d`"" 2>$null
-            }
-          }
-          Get-ChildItem $env:TEMP -Filter *.tzst -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
-          Get-PSDrive C | Select-Object Used, Free
+        uses: al-cheb/configure-pagefile-action@v1.5
+        with:
+          minimum-size: 16GB
+          maximum-size: 32GB
+          disk-root: 'D:'
 
       - name: Telegram Desktop build.
         if: env.ONLY_CACHE == 'false'
@@ -296,19 +372,19 @@ jobs:
           %TDESKTOP_BUILD_ARCH% ^
           ${{ matrix.qt }} ^
           %TDESKTOP_BUILD_API% ^
-          -D CMAKE_CONFIGURATION_TYPES=Debug ^
+          -D CMAKE_CONFIGURATION_TYPES=Release ^
           -D CMAKE_COMPILE_WARNING_AS_ERROR=ON ^
           -D CMAKE_MSVC_DEBUG_INFORMATION_FORMAT= ^
           -D DESKTOP_APP_DISABLE_AUTOUPDATE=ON ^
           -D DESKTOP_APP_DISABLE_CRASH_REPORTS=OFF ^
           %TDESKTOP_BUILD_DEFINE%
 
-          cmake --build ..\out --config Debug --parallel
+          cmake --build ..\out --config Release --parallel
 
       - name: Move artifact.
         if: (env.UPLOAD_ARTIFACT == 'true') || (github.ref == 'refs/heads/nightly')
         run: |
-          set OUT=%TBUILD%\%REPO_NAME%\out\Debug
+          set OUT=%TBUILD%\%REPO_NAME%\out\Release
           mkdir artifact
           move %OUT%\Telegram.exe artifact/
           if exist %OUT%\Updater.exe move %OUT%\Updater.exe artifact/
@@ -318,4 +394,4 @@ jobs:
         with:
           name: ${{ env.ARTIFACT_NAME }}
           path: artifact\
-          retention-days: 1
+          retention-days: 7

@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "core/core_settings.h"
 
+#include "telewhite/telewhite_mods.h"
 #include "base/platform/base_platform_info.h"
 #include "calls/group/calls_group_common.h"
 #include "history/view/history_view_quick_action.h"
@@ -1055,6 +1056,7 @@ void Settings::addFromSerialized(const QByteArray &serialized) {
 		if (stream.status() == QDataStream::Ok) {
 			_prefs = std::move(prefs);
 			Ui::SetShowSecondsInTime(showSeconds());
+			Telewhite::LoadMods(this);
 		}
 	}
 	if (!stream.atEnd()) {

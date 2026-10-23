@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "apiwrap.h"
 
+#include "telewhite/telewhite_mods.h"
 #include "api/api_authorizations.h"
 #include "api/api_attached_stickers.h"
 #include "api/api_blocked_peers.h"
@@ -27,6 +28,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "api/api_todo_lists.h"
 #include "api/api_self_destruct.h"
 #include "api/api_sensitive_content.h"
+#include "api/api_share_themes.h"
 #include "api/api_global_privacy.h"
 #include "api/api_reactions_notify_settings.h"
 #include "api/api_updates.h"
@@ -233,7 +235,8 @@ ApiWrap::ApiWrap(not_null<Main::Session*> session)
 , _premium(std::make_unique<Api::Premium>(this))
 , _usernames(std::make_unique<Api::Usernames>(this))
 , _websites(std::make_unique<Api::Websites>(this))
-, _peerColors(std::make_unique<Api::PeerColors>(this)) {
+, _peerColors(std::make_unique<Api::PeerColors>(this))
+, _shareThemes(std::make_unique<Api::ShareThemes>(this)) {
 	crl::on_main(session, [=] {
 		// You can't use _session->lifetime() in the constructor,
 		// only queued, because it is not constructed yet.
@@ -1442,7 +1445,8 @@ void ApiWrap::markContentsRead(
 		QVector<MTPint>>();
 	markedIds.reserve(items.size());
 	for (const auto &item : items) {
-		if (!item->markContentsRead(true) || !item->isRegular()) {
+		const auto skip = Telewhite::SkipContentsRead(item);
+		if (!item->markContentsRead(true) || !item->isRegular() || skip) {
 			continue;
 		}
 		if (const auto channel = item->history()->peer->asChannel()) {
@@ -1467,7 +1471,8 @@ void ApiWrap::markContentsRead(
 }
 
 void ApiWrap::markContentsRead(not_null<HistoryItem*> item) {
-	if (!item->markContentsRead(true) || !item->isRegular()) {
+	const auto skip = Telewhite::SkipContentsRead(item);
+	if (!item->markContentsRead(true) || !item->isRegular() || skip) {
 		return;
 	}
 	const auto ids = MTP_vector<MTPint>(1, MTP_int(item->id));
@@ -2192,7 +2197,9 @@ void ApiWrap::clearHistory(not_null<PeerData*> peer, bool revoke) {
 }
 
 void ApiWrap::deleteConversation(not_null<PeerData*> peer, bool revoke) {
-	if (const auto chat = peer->asChat()) {
+	const auto chat = peer->asChat();
+	// Leaving first hands a legacy group to its successor at once.
+	if (chat && !(revoke && chat->amCreator())) {
 		request(MTPmessages_DeleteChatUser(
 			MTP_flags(0),
 			chat->inputChat(),
@@ -5930,4 +5937,8 @@ Api::Websites &ApiWrap::websites() {
 
 Api::PeerColors &ApiWrap::peerColors() {
 	return *_peerColors;
+}
+
+Api::ShareThemes &ApiWrap::shareThemes() {
+	return *_shareThemes;
 }

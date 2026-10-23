@@ -127,6 +127,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "boxes/peers/edit_peer_info_box.h"
 #include "boxes/peers/manage_community_box.h"
 #include "boxes/premium_preview_box.h"
+#include "telewhite/telewhite_archive.h"
+#include "telewhite/telewhite_local_pins.h"
+#include "telewhite/telewhite_mods.h"
 #include "styles/style_chat.h"
 #include "styles/style_chat_helpers.h"
 #include "styles/style_credits.h"
@@ -409,6 +412,8 @@ bool PinnedLimitReached(
 		owner->setChatPinned(wasted, FilterId(), false);
 		owner->setChatPinned(history, FilterId(), true);
 		history->session().api().savePinnedOrder(folder);
+	} else if (Telewhite::PinLocallyOverLimit(controller, history)) {
+		return true;
 	} else if (folder) {
 		controller->show(Box(FolderPinsLimitBox, &history->session()));
 	} else {
@@ -439,6 +444,12 @@ void TogglePinnedThread(
 	}
 	const auto owner = &entry->owner();
 	const auto isPinned = !entry->isPinnedDialog(FilterId());
+	if (Telewhite::IsLocallyPinned(entry)) {
+		Telewhite::SetLocallyPinned(entry->asHistory(), false);
+		if (isPinned) {
+			return;
+		}
+	}
 	if (isPinned && PinnedLimitReached(controller, entry)) {
 		return;
 	}
@@ -565,8 +576,9 @@ void Filler::addTogglePin() {
 	} else if (InsideCollapsedCommunity(_request.key.history())) {
 		return;
 	}
+	const auto pinned = Telewhite::IsPinnedInList(entry, filterId);
 	const auto pinText = [=] {
-		return entry->isPinnedDialog(filterId)
+		return pinned
 			? tr::lng_context_unpin_from_top(tr::now)
 			: tr::lng_context_pin_to_top(tr::now);
 	};
@@ -579,9 +591,7 @@ void Filler::addTogglePin() {
 	_addAction(
 		pinText(),
 		pinToggle,
-		(entry->isPinnedDialog(filterId)
-			? &st::menuIconUnpin
-			: &st::menuIconPin));
+		(pinned ? &st::menuIconUnpin : &st::menuIconPin));
 }
 
 void Filler::addToggleMuteSubmenu(bool addSeparator) {
@@ -1950,6 +1960,9 @@ void Filler::fillHistoryActions() {
 	addViewDiscussion();
 	addDirectMessages();
 	addExportChat();
+	if (_peer) {
+		Telewhite::AddDeletedMessagesAction(_controller, _peer, _addAction);
+	}
 	addTranslate();
 	addReport();
 	addClearHistory();
@@ -3130,6 +3143,10 @@ base::weak_qptr<Ui::BoxContent> ShowForwardMessagesBox(
 	const auto showForwardOptions = !hasOnlyForcedForwardedInfo
 		&& (!hasRichPage
 			|| HistoryView::Controls::CanHideForwardAuthor(session, itemsList));
+	if (Telewhite::Enabled(Telewhite::Mod::ForwardNoAuthor)
+		&& (draft.options == Data::ForwardOptions::PreserveInfo)) {
+		draft.options = Data::ForwardOptions::NoSenderNames;
+	}
 	draft.options = HistoryView::Controls::NormalizeForwardOptions(
 		session,
 		itemsList,
@@ -3268,12 +3285,14 @@ base::weak_qptr<Ui::BoxContent> ShowForwardMessagesBox(
 			const auto forum = row->peer()->isForum();
 			const auto monoforum = row->peer()->isMonoforum();
 			const auto community = JoinedCommunityChats(row->peer());
+			const auto select = count
+				|| Telewhite::Enabled(Telewhite::Mod::MultiForward);
 			if (showLockedError(row)
 				|| (count && (forum || monoforum || community))) {
 				return;
-			} else if (!count || forum || monoforum || community) {
+			} else if (!select || forum || monoforum || community) {
 				ChooseRecipientBoxController::rowClicked(row);
-			} else if (count) {
+			} else {
 				delegate()->peerListSetRowChecked(row, !row->checked());
 				_selectionChanges.fire({});
 				refreshSuggestionChecked();
@@ -4322,8 +4341,9 @@ Fn<void()> DeleteAndLeaveHandler(
 	}();
 	if (isCreator) {
 		const auto requestId = std::make_shared<mtpRequestId>(0);
-		return [=] {
-			if (controller->showFrozenError() || (*requestId > 0)) {
+		const auto show = controller->uiShow();
+		const auto leaveAsCreator = [=](Fn<void()> leave) {
+			if (*requestId > 0) {
 				return;
 			}
 			*requestId = peer->session().api().request(
@@ -4331,17 +4351,27 @@ Fn<void()> DeleteAndLeaveHandler(
 					peer->input()
 			)).done([=](const MTPUser &result) {
 				*requestId = 0;
-				const auto user = peer->owner().processUser(result);
-				controller->show(Box(SelectFutureOwnerbox, peer, user));
+				if (result.type() == mtpc_userEmpty) {
+					leave();
+				} else {
+					const auto user = peer->owner().processUser(result);
+					show->show(Box(SelectFutureOwnerbox, peer, user, leave));
+				}
 			}).fail([=](const MTP::Error &error) {
 				*requestId = 0;
-				controller->show(Box(DeleteChatBox, peer));
+				leave();
 			}).send();
+		};
+		return [=] {
+			if (controller->showFrozenError() || (*requestId > 0)) {
+				return;
+			}
+			controller->show(Box(DeleteChatBox, peer, leaveAsCreator));
 		};
 	}
 	return [=] {
 		if (!controller->showFrozenError()) {
-			controller->show(Box(DeleteChatBox, peer));
+			controller->show(Box(DeleteChatBox, peer, nullptr));
 		}
 	};
 }
