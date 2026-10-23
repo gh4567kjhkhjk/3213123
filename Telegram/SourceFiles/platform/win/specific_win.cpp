@@ -27,6 +27,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "storage/localstorage.h"
 #include "core/application.h"
 #include "window/window_controller.h"
+#include "telewhite/telewhite_streamer_mode.h"
 #include "core/crash_reports.h"
 #include "core/version.h"
 
