@@ -21,6 +21,7 @@
 | Не отправлять «печатает…» | Моды → Режим призрака | Собеседник не видит набор текста. | `SendProgressManager::skipRequest` (`api/api_send_progress.cpp`) |
 | Всегда «не в сети» | Моды → Режим призрака | Клиент не сообщает, что вы онлайн. | `Updates::updateOnline` (`api/api_updates.cpp`) |
 | Смотреть истории анонимно | Моды → Режим призрака | Просмотры историй не отправляются. | `Stories::sendMarkAsReadRequest`, `sendIncrementViewsRequests` (`data/data_stories.cpp`) |
+| Скрывать окна от записи экрана | Моды → Режим стримера (только Windows) | Окна Telewhite не попадают на скриншоты, запись и демонстрацию экрана, а на мониторе видны как обычно. Системные уведомления Windows и значок в трее не скрываются. До Windows 10 версии 2004 вместо окон на записи чёрные прямоугольники. | `telewhite/telewhite_streamer_mode.cpp`, `Platform::SetWindowScreenshotProtection` (`platform/win/specific_win.cpp`), запуск в `Core::Application::run` |
 
 Ограничения режима призрака: если вы сами отправите сообщение в чат, сервер
 отметит его прочитанным. Одноразовые (самоуничтожающиеся) медиа отмечаются
